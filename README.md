@@ -77,7 +77,7 @@ func main() {
 Start the gateway (assuming you are in the `examples/ollama` directory):
 
 ```bash
-go run . --port 8080 --min 1 --max 5
+go run .
 ```
 
 ### 3. Usage
