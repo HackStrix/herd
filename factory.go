@@ -49,10 +49,11 @@ import (
 // processWorker implements Worker[*http.Client].
 // It is the value returned by ProcessFactory.Spawn.
 type processWorker struct {
-	id      string
-	port    int
-	address string // "http://127.0.0.1:<port>"
-	client  *http.Client
+	id         string
+	port       int
+	address    string // "http://127.0.0.1:<port>"
+	healthPath string // e.g. "/health" or "/"
+	client     *http.Client
 
 	mu        sync.Mutex
 	cmd       *exec.Cmd
@@ -71,10 +72,10 @@ func (w *processWorker) ID() string           { return w.id }
 func (w *processWorker) Address() string      { return w.address }
 func (w *processWorker) Client() *http.Client { return w.client }
 
-// Healthy performs a GET <address>/health and returns nil on 200 OK.
+// Healthy performs a GET <address><healthPath> and returns nil on 200 OK.
 // ctx controls the timeout of this single request.
 func (w *processWorker) Healthy(ctx context.Context) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, w.address+"/health", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, w.address+w.healthPath, nil)
 	if err != nil {
 		return err
 	}
@@ -137,9 +138,12 @@ func (w *processWorker) monitor() {
 //
 //	pool, err := herd.New(herd.NewProcessFactory("./my-binary", "--port", "{{.Port}}"))
 type ProcessFactory struct {
-	binary  string
-	args    []string // may contain "{{.Port}}" — replaced at spawn time
-	counter atomic.Int64
+	binary       string
+	args         []string      // may contain "{{.Port}}" — replaced at spawn time
+	extraEnv     []string      // additional KEY=VALUE env vars; "{{.Port}}" is replaced here too
+	healthPath   string        // path to poll for liveness; defaults to "/health"
+	startTimeout time.Duration // maximum time to wait for the first successful health check
+	counter      atomic.Int64
 }
 
 // NewProcessFactory returns a ProcessFactory that spawns the given binary.
@@ -150,7 +154,48 @@ type ProcessFactory struct {
 //
 //	factory := herd.NewProcessFactory("./ollama", "serve", "--port", "{{.Port}}")
 func NewProcessFactory(binary string, args ...string) *ProcessFactory {
-	return &ProcessFactory{binary: binary, args: args}
+	return &ProcessFactory{
+		binary:       binary,
+		args:         args,
+		healthPath:   "/health",
+		startTimeout: 30 * time.Second,
+	}
+}
+
+// WithEnv appends an extra KEY=VALUE environment variable that is injected
+// into every worker spawned by this factory. The literal string "{{.Port}}"
+// is replaced with the worker's allocated port number, which is useful for
+// binaries that accept the listen address via an env var rather than a flag.
+//
+//	factory := herd.NewProcessFactory("ollama", "serve").
+//		WithEnv("OLLAMA_HOST=127.0.0.1:{{.Port}}").
+//		WithEnv("OLLAMA_MODELS=/tmp/shared-ollama-models")
+func (f *ProcessFactory) WithEnv(kv string) *ProcessFactory {
+	f.extraEnv = append(f.extraEnv, kv)
+	return f
+}
+
+// WithHealthPath sets the HTTP path that herd polls to decide whether a worker
+// is ready. The path must return HTTP 200 when the process is healthy.
+//
+// Default: "/health"
+//
+// Use this for binaries that expose liveness on a non-standard path:
+//
+//	factory := herd.NewProcessFactory("ollama", "serve").
+//		WithHealthPath("/")   // ollama serves GET / → 200 "Ollama is running"
+func (f *ProcessFactory) WithHealthPath(path string) *ProcessFactory {
+	f.healthPath = path
+	return f
+}
+
+// WithStartTimeout sets the maximum duration herd will poll the worker's
+// health endpoint after spawning the process before giving up and killing it.
+//
+// Default: 30 seconds
+func (f *ProcessFactory) WithStartTimeout(d time.Duration) *ProcessFactory {
+	f.startTimeout = d
+	return f
 }
 
 // Spawn implements WorkerFactory[*http.Client].
@@ -172,8 +217,14 @@ func (f *ProcessFactory) Spawn(ctx context.Context) (Worker[*http.Client], error
 		resolvedArgs[i] = strings.ReplaceAll(a, "{{.Port}}", portStr)
 	}
 
+	// Substitute {{.Port}} in extra env vars
+	resolvedEnv := make([]string, len(f.extraEnv))
+	for i, e := range f.extraEnv {
+		resolvedEnv[i] = strings.ReplaceAll(e, "{{.Port}}", portStr)
+	}
+
 	cmd := exec.CommandContext(ctx, f.binary, resolvedArgs...)
-	cmd.Env = append(os.Environ(), "PORT="+portStr)
+	cmd.Env = append(os.Environ(), append([]string{"PORT=" + portStr}, resolvedEnv...)...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
@@ -183,18 +234,21 @@ func (f *ProcessFactory) Spawn(ctx context.Context) (Worker[*http.Client], error
 	log.Printf("[%s] started pid=%d addr=%s", id, cmd.Process.Pid, address)
 
 	w := &processWorker{
-		id:      id,
-		port:    port,
-		address: address,
-		client:  &http.Client{Timeout: 3 * time.Second},
-		cmd:     cmd,
+		id:         id,
+		port:       port,
+		address:    address,
+		healthPath: f.healthPath,
+		client:     &http.Client{Timeout: 3 * time.Second},
+		cmd:        cmd,
 	}
 
 	// Monitor the process in background — fires onCrash if it exits unexpectedly
 	go w.monitor()
 
 	// Poll /health until the worker is ready or ctx expires
-	if err := waitForHealthy(ctx, w); err != nil {
+	waitCtx, cancel := context.WithTimeout(ctx, f.startTimeout)
+	defer cancel()
+	if err := waitForHealthy(waitCtx, w); err != nil {
 		_ = w.Close()
 		return nil, fmt.Errorf("herd: ProcessFactory: %s never became healthy: %w", id, err)
 	}
@@ -208,12 +262,11 @@ func (f *ProcessFactory) Spawn(ctx context.Context) (Worker[*http.Client], error
 // ---------------------------------------------------------------------------
 
 // waitForHealthy polls w.Healthy every 200ms until it returns nil or ctx
-// is cancelled. Gives the process up to 30 chances (6 seconds at 200ms).
+// is cancelled.
 func waitForHealthy(ctx context.Context, w Worker[*http.Client]) error {
-	const maxAttempts = 30
 	const pollInterval = 200 * time.Millisecond
 
-	for i := 0; i < maxAttempts; i++ {
+	for {
 		hCtx, cancel := context.WithTimeout(ctx, 1*time.Second)
 		err := w.Healthy(hCtx)
 		cancel()
@@ -228,7 +281,6 @@ func waitForHealthy(ctx context.Context, w Worker[*http.Client]) error {
 		case <-time.After(pollInterval):
 		}
 	}
-	return fmt.Errorf("health check failed after %d attempts", maxAttempts)
 }
 
 // findFreePort asks the OS for an available TCP port by binding to :0.

@@ -123,6 +123,7 @@ type Pool[C any] struct {
 	cfg     config
 
 	mu           sync.Mutex
+	pendingAdds  int
 	sessions     map[string]Worker[C]     // sessionID → pinned worker
 	inflight     map[string]chan struct{} // sessionID → broadcast channel
 	lastAccessed map[string]time.Time     // sessionID → last Acquire time (for TTL)
@@ -368,15 +369,24 @@ func (p *Pool[C]) maybeScaleUp() {
 		return
 	}
 	p.mu.Lock()
-	total := len(p.workers)
-	p.mu.Unlock()
+	total := len(p.workers) + p.pendingAdds
 	if total < p.cfg.max {
+		p.pendingAdds++
+		p.mu.Unlock()
 		go p.addWorker()
+		return
 	}
+	p.mu.Unlock()
 }
 
 // addWorker spawns one new worker and registers it. Runs in its own goroutine.
 func (p *Pool[C]) addWorker() {
+	defer func() {
+		p.mu.Lock()
+		p.pendingAdds--
+		p.mu.Unlock()
+	}()
+
 	w, err := p.factory.Spawn(context.Background())
 	if err != nil {
 		log.Printf("[pool] scale-up failed: %v", err)
