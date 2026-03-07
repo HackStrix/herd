@@ -1,4 +1,4 @@
-# Herd 🐄
+# Herd
 
 **Herd** is a session-affine process pool for Go. It manages a fleet of OS subprocess "workers" and routes incoming requests to the correct worker based on an arbitrary session ID.
 
@@ -97,6 +97,8 @@ curl -X POST http://localhost:8080/api/chat \
 ---
 
 ## 🏗️ Architecture
+
+> [**Read the full Architecture & Request Lifecycle Design Document**](./docs/ARCHITECTURE.md)
 
 Herd is built around three core interfaces:
 
