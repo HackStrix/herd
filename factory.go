@@ -138,12 +138,13 @@ func (w *processWorker) monitor() {
 //
 //	pool, err := herd.New(herd.NewProcessFactory("./my-binary", "--port", "{{.Port}}"))
 type ProcessFactory struct {
-	binary       string
-	args         []string      // may contain "{{.Port}}" — replaced at spawn time
-	extraEnv     []string      // additional KEY=VALUE env vars; "{{.Port}}" is replaced here too
-	healthPath   string        // path to poll for liveness; defaults to "/health"
-	startTimeout time.Duration // maximum time to wait for the first successful health check
-	counter      atomic.Int64
+	binary           string
+	args             []string      // may contain "{{.Port}}" — replaced at spawn time
+	extraEnv         []string      // additional KEY=VALUE env vars; "{{.Port}}" is replaced here too
+	healthPath       string        // path to poll for liveness; defaults to "/health"
+	startTimeout     time.Duration // maximum time to wait for the first successful health check
+	memoryLimitBytes uint64        // maximum memory in bytes for the child process
+	counter          atomic.Int64
 }
 
 // NewProcessFactory returns a ProcessFactory that spawns the given binary.
@@ -198,6 +199,19 @@ func (f *ProcessFactory) WithStartTimeout(d time.Duration) *ProcessFactory {
 	return f
 }
 
+// WithMemoryLimit sets a soft virtual memory limit on the worker process in bytes.
+//
+// On Linux, this is enforced using a shell wrapper (`sh -c ulimit -v <kb>`).
+// If the worker exceeds this limit, the OS will kill it (typically via SIGSEGV/SIGABRT),
+// and herd's crash handler (if configured via WithCrashHandler) will clean up the session.
+//
+// On macOS and platforms where `ulimit` cannot be modified by unprivileged users,
+// the worker will still spawn gracefully but the memory limit will act as a no-op.
+func (f *ProcessFactory) WithMemoryLimit(limitBytes uint64) *ProcessFactory {
+	f.memoryLimitBytes = limitBytes
+	return f
+}
+
 // Spawn implements WorkerFactory[*http.Client].
 // It allocates a free port, starts the binary, and blocks until the worker
 // passes a /health check or ctx is cancelled.
@@ -223,7 +237,21 @@ func (f *ProcessFactory) Spawn(ctx context.Context) (Worker[*http.Client], error
 		resolvedEnv[i] = strings.ReplaceAll(e, "{{.Port}}", portStr)
 	}
 
-	cmd := exec.CommandContext(ctx, f.binary, resolvedArgs...)
+	var cmd *exec.Cmd
+	if f.memoryLimitBytes > 0 {
+		limitKB := f.memoryLimitBytes / 1024
+		// Execute via shell wrapper to set ulimit.
+		// On macOS, ulimit -v might fail (Invalid argument) so we gracefully fallback using '|| true'.
+		script := fmt.Sprintf("ulimit -v %d 2>/dev/null || true; exec \"$@\"", limitKB)
+
+		shellArgs := []string{"-c", script, "--", f.binary}
+		shellArgs = append(shellArgs, resolvedArgs...)
+
+		cmd = exec.CommandContext(ctx, "sh", shellArgs...)
+	} else {
+		cmd = exec.CommandContext(ctx, f.binary, resolvedArgs...)
+	}
+
 	cmd.Env = append(os.Environ(), append([]string{"PORT=" + portStr}, resolvedEnv...)...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
