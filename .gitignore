@@ -7,3 +7,7 @@ examples/ollama/ollama
 
 # macOS
 .DS_Store
+
+# Coverage
+coverage.out
+coverage.html
