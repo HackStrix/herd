@@ -62,7 +62,9 @@ func main() {
 		WithEnv("OLLAMA_HOST=127.0.0.1:{{.Port}}").
 		WithEnv("OLLAMA_MODELS=" + *modelsDir).
 		WithHealthPath("/"). // ollama: GET / → 200 "Ollama is running"
-		WithStartTimeout(2 * time.Minute)
+		WithStartTimeout(2 * time.Minute).
+		WithMemoryLimit(1024 * 1024 * 512) // 512MB
+		
 
 	// ── Pool ───────────────────────────────────────────────────────────────
 	pool, err := herd.New(factory,
