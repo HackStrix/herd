@@ -11,16 +11,13 @@
 // binaries (browsers, LLMs, REPLs) to be turned into multi-tenant services
 // without any external coordination layer.
 //
-// # File map
-//
-//	worker.go   — Worker[C] and WorkerFactory[C] interfaces (THIS FILE)
-//	options.go  — Functional options (WithAutoScale, WithTTL, …)
-//	factory.go  — ProcessFactory: default WorkerFactory for OS binaries
-//	pool.go     — Pool[C]: the singleflight-safe session router
-//	pool_test.go — Race-detector tests for Pool.Acquire
+
 package herd
 
-import "context"
+import (
+	"context"
+	"io"
+)
 
 // ---------------------------------------------------------------------------
 // Worker[C]
@@ -36,9 +33,8 @@ type Worker[C any] interface {
 	// Never reused — not even after a crash and restart.
 	ID() string
 
-	// Address returns the internal URI the worker is listening on.
-	// e.g. "http://127.0.0.1:54321"
-	// Required by NewReverseProxy (proxy/proxy.go) to know where to forward.
+	// Address returns the internal network URI the worker
+	// is listening on (e.g., '127.0.0.1:54321').
 	Address() string
 
 	// Client returns the typed connection to the worker process.
@@ -53,7 +49,7 @@ type Worker[C any] interface {
 
 	// Close performs graceful shutdown of the worker process.
 	// Called by the pool during scale-down or Pool.Shutdown.
-	Close() error
+	io.Closer
 }
 
 // ---------------------------------------------------------------------------

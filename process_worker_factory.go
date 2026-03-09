@@ -29,8 +29,11 @@
 package herd
 
 import (
+	"bufio"
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -41,6 +44,8 @@ import (
 	"sync/atomic"
 	"time"
 )
+
+var ErrWorkerDead = errors.New("worker process has died")
 
 // ---------------------------------------------------------------------------
 // processWorker — concrete Worker[*http.Client] backed by exec.Cmd
@@ -66,6 +71,11 @@ type processWorker struct {
 	// onCrash is wired up by the pool after Spawn returns.
 	// Called with the sessionID when the process exits unexpectedly.
 	onCrash func(sessionID string)
+
+	// dead is closed when the process exits.
+	// or when the worker is explicitly killed.
+	// all the others can listen to this channel to know when the worker is dead.
+	dead chan struct{}
 }
 
 func (w *processWorker) ID() string           { return w.id }
@@ -75,16 +85,25 @@ func (w *processWorker) Client() *http.Client { return w.client }
 // Healthy performs a GET <address><healthPath> and returns nil on 200 OK.
 // ctx controls the timeout of this single request.
 func (w *processWorker) Healthy(ctx context.Context) error {
+
+	select {
+	case <-w.dead:
+		return ErrWorkerDead
+	default:
+	}
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, w.address+w.healthPath, nil)
 	if err != nil {
 		return err
 	}
 	resp, err := w.client.Do(req)
 	if err != nil {
+		log.Println("health: unexpected error making request", err)
 		return err
 	}
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
+		log.Println("health: unexpected status", resp.StatusCode)
 		return fmt.Errorf("health: unexpected status %d", resp.StatusCode)
 	}
 	return nil
@@ -113,6 +132,9 @@ func (w *processWorker) monitor() {
 
 	_ = cmd.Wait() // blocks until process exits
 
+	// broadcast to all the listeners that the worker is dead.
+	close(w.dead)
+
 	w.mu.Lock()
 	prevSession := w.sessionID
 	w.sessionID = ""
@@ -138,12 +160,13 @@ func (w *processWorker) monitor() {
 //
 //	pool, err := herd.New(herd.NewProcessFactory("./my-binary", "--port", "{{.Port}}"))
 type ProcessFactory struct {
-	binary       string
-	args         []string      // may contain "{{.Port}}" — replaced at spawn time
-	extraEnv     []string      // additional KEY=VALUE env vars; "{{.Port}}" is replaced here too
-	healthPath   string        // path to poll for liveness; defaults to "/health"
-	startTimeout time.Duration // maximum time to wait for the first successful health check
-	counter      atomic.Int64
+	binary                string
+	args                  []string      // may contain "{{.Port}}" — replaced at spawn time
+	extraEnv              []string      // additional KEY=VALUE env vars; "{{.Port}}" is replaced here too
+	healthPath            string        // path to poll for liveness; defaults to "/health"
+	startTimeout          time.Duration // maximum time to wait for the first successful health check
+	startHealthCheckDelay time.Duration // delay the health check for the first time.
+	counter               atomic.Int64
 }
 
 // NewProcessFactory returns a ProcessFactory that spawns the given binary.
@@ -155,10 +178,11 @@ type ProcessFactory struct {
 //	factory := herd.NewProcessFactory("./ollama", "serve", "--port", "{{.Port}}")
 func NewProcessFactory(binary string, args ...string) *ProcessFactory {
 	return &ProcessFactory{
-		binary:       binary,
-		args:         args,
-		healthPath:   "/health",
-		startTimeout: 30 * time.Second,
+		binary:                binary,
+		args:                  args,
+		healthPath:            "/health",
+		startTimeout:          30 * time.Second,
+		startHealthCheckDelay: 1 * time.Second,
 	}
 }
 
@@ -198,6 +222,27 @@ func (f *ProcessFactory) WithStartTimeout(d time.Duration) *ProcessFactory {
 	return f
 }
 
+// WithStartHealthCheckDelay delay the health check for the first time.
+// let the process start and breath before hammering with health checks
+func (f *ProcessFactory) WithStartHealthCheckDelay(d time.Duration) *ProcessFactory {
+	f.startHealthCheckDelay = d
+	return f
+}
+
+func streamLogs(workerID string, pipe io.ReadCloser, isError bool) {
+	// bufio.Scanner guarantees we read line-by-line, preventing torn logs.
+	scanner := bufio.NewScanner(pipe)
+	for scanner.Scan() {
+		line := scanner.Text()
+		// Route this to your actual logger (e.g., slog, zap, or standard log)
+		if isError {
+			log.Printf("[worker:%s] STDERR: %s", workerID, line)
+		} else {
+			log.Printf("[worker:%s] STDOUT: %s", workerID, line)
+		}
+	}
+}
+
 // Spawn implements WorkerFactory[*http.Client].
 // It allocates a free port, starts the binary, and blocks until the worker
 // passes a /health check or ctx is cancelled.
@@ -223,15 +268,27 @@ func (f *ProcessFactory) Spawn(ctx context.Context) (Worker[*http.Client], error
 		resolvedEnv[i] = strings.ReplaceAll(e, "{{.Port}}", portStr)
 	}
 
-	cmd := exec.CommandContext(ctx, f.binary, resolvedArgs...)
+	// During program exits, this should be cleaned up by the Shutdown method
+	cmd := exec.Command(f.binary, resolvedArgs...)
 	cmd.Env = append(os.Environ(), append([]string{"PORT=" + portStr}, resolvedEnv...)...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, fmt.Errorf("herd: ProcessFactory: stdout pipe: %w", err)
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return nil, fmt.Errorf("herd: ProcessFactory: stderr pipe: %w", err)
+	}
 
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("herd: ProcessFactory: start %s: %w", f.binary, err)
 	}
 	log.Printf("[%s] started pid=%d addr=%s", id, cmd.Process.Pid, address)
+
+	// Stream logs in background
+	go streamLogs(id, stdout, false)
+	go streamLogs(id, stderr, true)
 
 	w := &processWorker{
 		id:         id,
@@ -240,10 +297,14 @@ func (f *ProcessFactory) Spawn(ctx context.Context) (Worker[*http.Client], error
 		healthPath: f.healthPath,
 		client:     &http.Client{Timeout: 3 * time.Second},
 		cmd:        cmd,
+		dead:       make(chan struct{}),
 	}
 
 	// Monitor the process in background — fires onCrash if it exits unexpectedly
 	go w.monitor()
+
+	// wait for start health check delay
+	time.Sleep(f.startHealthCheckDelay)
 
 	// Poll /health until the worker is ready or ctx expires
 	waitCtx, cancel := context.WithTimeout(ctx, f.startTimeout)
@@ -274,6 +335,12 @@ func waitForHealthy(ctx context.Context, w Worker[*http.Client]) error {
 		if err == nil {
 			return nil
 		}
+
+		// THE FIX: If the process is dead, stop polling immediately.
+		if errors.Is(err, ErrWorkerDead) {
+			return fmt.Errorf("aborted health check: %w", err)
+		}
+
 		// Check parent context before sleeping
 		select {
 		case <-ctx.Done():

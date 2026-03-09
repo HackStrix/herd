@@ -80,17 +80,28 @@ func (p *Pool[C]) sweepExpired() {
 	}
 	p.mu.Unlock()
 
-	// Release workers outside the lock so we don't hold mu during channel push
+	// Release or close workers outside the lock so we don't hold mu while blocking
 	for _, e := range expired {
-		log.Printf("[pool] TTL expired: session %q → worker %s returned to pool", e.sessionID, e.worker.ID())
-		// Push directly to available — bypass release() logging duplication
-		select {
-		case p.available <- e.worker:
-		default:
-			log.Printf("[pool] TTL sweep: available channel full releasing worker %s — this is a bug", e.worker.ID())
+		if p.cfg.reuseWorkers {
+			log.Printf("[pool] TTL expired: session %q → worker %s returned to pool", e.sessionID, e.worker.ID())
+			// Push directly to available — bypass release() logging duplication
+			select {
+			case p.available <- e.worker:
+			default:
+				log.Printf("[pool] TTL sweep: available channel full releasing worker %s — this is a bug", e.worker.ID())
+			}
+		} else {
+			log.Printf("[pool] TTL expired: session %q → worker %s killed (reuse=false)", e.sessionID, e.worker.ID())
+			go func(w Worker[C]) {
+				if err := w.Close(); err != nil {
+					log.Printf("[pool] TTL sweep: error closing worker %s: %v", w.ID(), err)
+				}
+				p.removeWorker(w)
+				p.maybeScaleUp()
+			}(e.worker)
 		}
-		// Notify user crash handler? No — TTL expiry is expected behaviour, not a crash.
 	}
+
 }
 
 // runTTLSweep is the real implementation wired into the ttlSweepLoop stub in pool.go.

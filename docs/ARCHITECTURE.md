@@ -14,7 +14,7 @@ sequenceDiagram
     participant Client as HTTP Client
     participant Proxy as ReverseProxy<br/>(proxy/proxy.go)
     participant Pool as Pool[C]<br/>(pool.go)
-    participant Worker as processWorker<br/>(factory.go)
+    participant Worker as processWorker<br/>(process_worker_factory.go)
 
     Client->>Proxy: POST /api  X-Session-ID: abc123
 
@@ -62,7 +62,7 @@ sequenceDiagram
 
 ### `WorkerFactory[C]` — The Engine
 Defined in [`worker.go`](../worker.go). This is the **only component that touches the OS**.  
-`ProcessFactory` (the default implementation in `factory.go`) calls `exec.Cmd`, allocates a free port via `net.Listen("tcp", "0.0.0.0:0")`, injects the port as `{{.Port}}` in args and via the `PORT` env var, then polls `GET /health` every 200ms until the process is ready.
+`ProcessFactory` (the default implementation in `process_worker_factory.go`) calls `exec.Cmd`, allocates a free port via `net.Listen("tcp", "0.0.0.0:0")`, injects the port as `{{.Port}}` in args and via the `PORT` env var, then polls `GET /health` every 200ms until the process is ready.
 
 Implement `WorkerFactory[C]` yourself only if you need custom spawn logic — Firecracker microVMs, Docker containers, remote SSH processes.
 
@@ -96,8 +96,8 @@ A pool without a router is just a glorified map. `NewReverseProxy` is the one-li
 | File | Responsibility |
 |------|---------------|
 | `worker.go` | `Worker[C]` + `WorkerFactory[C]` interfaces |
-| `factory.go` | `ProcessFactory` — default OS subprocess factory |
+| `process_worker_factory.go` | `ProcessFactory` — default OS subprocess factory |
 | `pool.go` | `Pool[C]` — singleflight session router |
-| `pool_ttl.go` | TTL sweep loop — idle session eviction |
+| `ttl.go` | TTL sweep loop — idle session eviction |
 | `options.go` | Functional options (`WithAutoScale`, `WithTTL`, …) |
 | `proxy/proxy.go` | `NewReverseProxy` — HTTP gateway |

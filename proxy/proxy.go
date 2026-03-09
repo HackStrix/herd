@@ -112,10 +112,10 @@ func (rp *ReverseProxy[C]) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("herd: could not acquire worker: %v", err), http.StatusServiceUnavailable)
 		return
 	}
-	// Release after the response body is fully written.
-	// Note: httputil.ReverseProxy calls ServeHTTP synchronously — it blocks
-	// until the upstream response is consumed, so defer here is correct.
-	defer sess.Release()
+
+	// no session release here
+	// We should not be releasing the session here. session should only be release at
+	// ttl or if the health checks fails and we are cleaning up
 
 	target, err := url.Parse(sess.Worker.Address())
 	if err != nil {

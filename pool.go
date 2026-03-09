@@ -132,16 +132,25 @@ type Pool[C any] struct {
 	available chan Worker[C] // free workers
 
 	wg   sync.WaitGroup
-	done chan struct{}
+	done chan struct{} // closed when the pool is shutting down, all the background loops will listen for this
+
+	// pool context for canceling all the background loops
+	// must be canceled when the pool is shutting down
+	ctx    context.Context 
+    cancel context.CancelFunc
 }
 
 // New creates a pool backed by factory, applies opts, and starts min workers.
 // Returns an error if any of the initial workers fail to start.
 func New[C any](factory WorkerFactory[C], opts ...Option) (*Pool[C], error) {
 	cfg := defaultConfig()
-	for _, o := range opts {
-		o(&cfg)
+	
+	// Using functional options pattern
+	for _, apply_options := range opts {
+		apply_options(&cfg)
 	}
+
+	ctx, cancel := context.WithCancel(context.Background())
 
 	p := &Pool[C]{
 		factory:      factory,
@@ -152,6 +161,8 @@ func New[C any](factory WorkerFactory[C], opts ...Option) (*Pool[C], error) {
 		workers:      make([]Worker[C], 0, cfg.max),
 		available:    make(chan Worker[C], cfg.max),
 		done:         make(chan struct{}),
+		ctx:          ctx,
+		cancel:       cancel,
 	}
 
 	// Start the minimum number of workers synchronously.
@@ -169,10 +180,15 @@ func New[C any](factory WorkerFactory[C], opts ...Option) (*Pool[C], error) {
 	}
 
 	// Background loops
-	go p.healthCheckLoop()
+	if cfg.healthInterval > 0 {
+		go p.healthCheckLoop()
+	}
+
 	if cfg.ttl > 0 {
 		go p.runTTLSweep()
 	}
+
+	// TODO: check if we need crash monitoring loop here
 
 	return p, nil
 }
@@ -310,7 +326,20 @@ func (p *Pool[C]) release(sessionID string, w Worker[C]) {
 	p.mu.Lock()
 	delete(p.sessions, sessionID)
 	delete(p.lastAccessed, sessionID)
+	// Validate the worker wasn't evicted by a crash or health check
+	isValid := false
+	for _, existing := range p.workers {
+		if existing.ID() == w.ID() {
+			isValid = true
+            break
+        }
+    }
 	p.mu.Unlock()
+
+	if !isValid {
+		log.Printf("[pool] release(%q): worker %s returned to pool", sessionID, w.ID())
+		return
+	}
 
 	log.Printf("[pool] release(%q): worker %s returned to pool", sessionID, w.ID())
 
@@ -365,10 +394,12 @@ func (p *Pool[C]) onCrash(sessionID string) {
 // and there are no free workers. Uses the workers slice length + a pendingAdds
 // counter to avoid overshooting max under concurrent scale-up pressure.
 func (p *Pool[C]) maybeScaleUp() {
+	p.mu.Lock()
+	// p.available should be read with lock to avoid race conditions
 	if len(p.available) > 0 {
+		p.mu.Unlock()
 		return
 	}
-	p.mu.Lock()
 	total := len(p.workers) + p.pendingAdds
 	if total < p.cfg.max {
 		p.pendingAdds++
@@ -386,8 +417,13 @@ func (p *Pool[C]) addWorker() {
 		p.pendingAdds--
 		p.mu.Unlock()
 	}()
+	
+	// if the factory spawn is over the network or some other external call it will hang and leak memory
+	// if it cant be resolved within 60 sec cancel the operation and reclaim resources
+	ctx, cancel := context.WithTimeout(p.ctx, 60*time.Second)
+	defer cancel()	
 
-	w, err := p.factory.Spawn(context.Background())
+	w, err := p.factory.Spawn(ctx)
 	if err != nil {
 		log.Printf("[pool] scale-up failed: %v", err)
 		return
@@ -398,6 +434,7 @@ func (p *Pool[C]) addWorker() {
 
 // removeWorker evicts w from the p.workers slice (called after a crash or
 // health-check failure). Linear scan is fine — pools are small (< 100 workers).
+// TODO: eventually have a lookup to avoid holding the lock while we remove the worker
 func (p *Pool[C]) removeWorker(w Worker[C]) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -447,12 +484,6 @@ func (p *Pool[C]) healthCheckLoop() {
 	}
 }
 
-// ttlSweepLoop delegates to runTTLSweep in pool_ttl.go.
-// Kept here as the entry point so pool.go remains the authoritative list
-// of all background goroutines started by New[C].
-func (p *Pool[C]) ttlSweepLoop() {
-	// real implementation is in pool_ttl.go → runTTLSweep
-}
 
 // ---------------------------------------------------------------------------
 // Stats & Shutdown
@@ -476,8 +507,8 @@ func (p *Pool[C]) Stats() PoolStats {
 // In-flight Acquire calls will receive a context cancellation error if
 // the caller's ctx is tied to the application lifetime.
 func (p *Pool[C]) Shutdown(ctx context.Context) error {
+	p.cancel()
 	close(p.done)
-
 	p.mu.Lock()
 	workers := make([]Worker[C], len(p.workers))
 	copy(workers, p.workers)

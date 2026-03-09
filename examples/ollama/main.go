@@ -44,7 +44,7 @@ func main() {
 	maxWorkers := flag.Int("max", 5, "maximum concurrent ollama workers")
 	port := flag.Int("port", 8080, "gateway listen port")
 	modelsDir := flag.String("models", "/Users/sankalpnarula/.ollama/models", "shared models directory (read-only mount)")
-	ttl := flag.Duration("ttl", 10*time.Minute, "idle agent TTL before its worker is reclaimed")
+	ttl := flag.Duration("ttl", 10*time.Second, "idle agent TTL before its worker is reclaimed")
 	flag.Parse()
 
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
@@ -62,7 +62,8 @@ func main() {
 		WithEnv("OLLAMA_HOST=127.0.0.1:{{.Port}}").
 		WithEnv("OLLAMA_MODELS=" + *modelsDir).
 		WithHealthPath("/"). // ollama: GET / → 200 "Ollama is running"
-		WithStartTimeout(2 * time.Minute)
+		WithStartTimeout(2 * time.Minute).
+		WithStartHealthCheckDelay(1 * time.Second)
 
 	// ── Pool ───────────────────────────────────────────────────────────────
 	pool, err := herd.New(factory,
@@ -74,6 +75,7 @@ func main() {
 			// clear any external state tied to that agent's conversation.
 			log.Printf("[ALERT] ollama worker for agent %q crashed — conversation state lost", agentID)
 		}),
+		herd.WithWorkerReuse(true), // workers are not allowed to be reused after ttl
 	)
 	if err != nil {
 		log.Fatalf("failed to start pool: %v", err)

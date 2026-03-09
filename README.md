@@ -56,12 +56,15 @@ func main() {
 	// 1. Define how to spawn an Ollama worker on a dynamic port
 	factory := herd.NewProcessFactory("ollama", "serve").
 		WithEnv("OLLAMA_HOST=127.0.0.1:{{.Port}}").
-		WithHealthPath("/")
+		WithHealthPath("/").
+		WithStartTimeout(2 * time.Minute).
+		WithStartHealthCheckDelay(1 * time.Second)
 
 	// 2. Create the pool with auto-scaling and TTL eviction
 	pool, _ := herd.New(factory,
 		herd.WithAutoScale(1, 10),
 		herd.WithTTL(10 * time.Minute),
+		herd.WithWorkerReuse(true),
 	)
 
 	// 3. Setup a session-aware reverse proxy
@@ -119,10 +122,12 @@ Herd is built around three core interfaces:
 
 | Option | Description | Default |
 | :--- | :--- | :--- |
-| `WithAutoScale(min, max)` | Sets the floor and ceiling for the process fleet. | `min:1, max:1` |
-| `WithTTL(time.Duration)` | Max idle time for a session before it is evicted. | `0` (Disabled) |
-| `WithHealthInterval(d)` | How often to poll workers for liveness. | `10s` |
+| `WithAutoScale(min, max)` | Sets the floor and ceiling for the process fleet. | `min:1, max:10` |
+| `WithTTL(time.Duration)` | Max idle time for a session before it is evicted. | `5m` |
+| `WithHealthInterval(d)` | How often to poll workers for liveness. | `5s` |
+| `WithStartHealthCheckDelay(d)` | Delay before starting health checks on newly spawned workers. | `1s` |
 | `WithCrashHandler(func)` | Callback triggered when a worker exits unexpectedly. | `nil` |
+| `WithWorkerReuse(bool)` | Whether to recycle workers or kill them when TTL expires. | `true` |
 
 ---
 

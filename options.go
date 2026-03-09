@@ -21,6 +21,7 @@ package herd
 
 import "time"
 
+
 // ---------------------------------------------------------------------------
 // config — internal knobs for Pool
 // ---------------------------------------------------------------------------
@@ -53,6 +54,13 @@ type config struct {
 	// Use this to clean up any external state tied to that session.
 	// Default: nil (crash is logged but not propagated to caller)
 	crashHandler func(sessionID string)
+
+	startHealthCheckDelay time.Duration
+
+	// reuseWorkers controls if workers are recycled or killed when their
+	// session expires.
+	// Default: true
+	reuseWorkers bool
 }
 
 // defaultConfig returns the baseline configuration.
@@ -60,10 +68,12 @@ type config struct {
 // herd.New(factory) with no extra options produces a working pool.
 func defaultConfig() config {
 	return config{
-		min:            1,
-		max:            10,
-		ttl:            5 * time.Minute,
-		healthInterval: 5 * time.Second,
+		min:                   1,
+		max:                   10,
+		ttl:                   5 * time.Minute,
+		healthInterval:        5 * time.Second,
+		startHealthCheckDelay: 1 * time.Second,
+		reuseWorkers:          true,
 	}
 }
 
@@ -150,4 +160,26 @@ func WithCrashHandler(fn func(sessionID string)) Option {
 // checked once during Acquire (step 6 of the singleflight protocol).
 func WithHealthInterval(d time.Duration) Option {
 	return func(c *config) { c.healthInterval = d }
+}
+
+// ---------------------------------------------------------------------------
+// WithStartHealthCheckDelay — background health polling
+// ---------------------------------------------------------------------------
+
+// WithStartHealthCheckDelay delay the health check for the first time.
+// let the process start and breath before hammering with health checks
+func WithStartHealthCheckDelay(d time.Duration) Option {
+	return func(c *config) { c.startHealthCheckDelay = d }
+}
+
+// ---------------------------------------------------------------------------
+// WithWorkerReuse — worker recycling policy
+// ---------------------------------------------------------------------------
+
+// WithWorkerReuse controls whether a worker is recycled when its session's TTL
+// expires. If true (the default), the worker is returned to the available pool
+// to serve new sessions. If false, the worker process is killed when the session
+// expires, and a fresh worker is spawned to maintain the minimum pool capacity.
+func WithWorkerReuse(reuse bool) Option {
+	return func(c *config) { c.reuseWorkers = reuse }
 }
