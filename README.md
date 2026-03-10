@@ -60,7 +60,7 @@ func main() {
 
 	// 2. Worker reuse is disabled to prevent state leaks between sessions
 	pool, _ := herd.New(factory,
-		herd.WithAutoScale(1, 5),
+		herd.WithAutoScale(1, 5), // auto-scale between 1 and 5 concurrent tenants (until expires)
 		herd.WithTTL(15 * time.Minute),
 		herd.WithWorkerReuse(false), // CRITICAL: Never share browsers between users
 	)
