@@ -16,7 +16,8 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        go-version: [ "1.21.x", "1.22.x", "1.23.x", "1.24.x", "1.25.x", "1.26.x"]
+        # 1.21.x dropped: go.mod requires >= 1.22 (needed for SysProcAttr.CgroupFD)
+        go-version: [ "1.22.x", "1.23.x", "1.24.x", "1.25.x", "1.26.x"]
 
     steps:
     - uses: actions/checkout@v4
@@ -35,6 +36,42 @@ jobs:
     - name: Run tests with race detector
       run: go test -v -race -coverprofile=coverage.txt -covermode=atomic ./...
 
+  # cgroup-integration: Layer 3 tests that require real cgroupv2 and root access.
+  # Runs only on the latest stable Go version to keep CI fast.
+  cgroup-integration:
+    name: Cgroup Integration Tests
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: "1.26.x"
+
+    - name: Verify cgroupv2 is available
+      run: |
+        if ! grep -q cgroup2 /proc/mounts; then
+          echo "cgroupv2 not mounted — skipping integration tests"
+          echo "CGROUP_AVAILABLE=false" >> "$GITHUB_ENV"
+        else
+          echo "CGROUP_AVAILABLE=true" >> "$GITHUB_ENV"
+        fi
+
+    - name: Build test dependencies (healthworker)
+      run: go build ./testdata/healthworker/...
+
+    - name: Run cgroup integration tests (as root)
+      if: env.CGROUP_AVAILABLE == 'true'
+      run: |
+        sudo --preserve-env=PATH,GOPATH,GOCACHE,HOME \
+          env HERD_CGROUP_TEST=1 \
+          $(which go) test -v -run TestSandbox -timeout 60s ./...
+      env:
+        GOPATH: ${{ env.GOPATH }}
+        GOCACHE: ${{ env.GOCACHE }}
+
   lint:
     name: Lint Code
     runs-on: ubuntu-latest
@@ -44,7 +81,7 @@ jobs:
     - name: Set up Go
       uses: actions/setup-go@v5
       with:
-        go-version: "1.21.x"
+        go-version: "1.22.x"
         cache: false # golangci-lint-action handles its own caching
 
     - name: golangci-lint
