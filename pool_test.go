@@ -101,6 +101,7 @@ func newTestPool(t *testing.T, workers ...*stubWorker) *Pool[*stubClient] {
 		sessions:     make(map[string]Worker[*stubClient]),
 		inflight:     make(map[string]chan struct{}),
 		lastAccessed: make(map[string]time.Time),
+		activeConns:  make(map[string]int32),
 		workers:      make([]Worker[*stubClient], 0, len(workers)),
 		available:    make(chan Worker[*stubClient], len(workers)),
 		done:         make(chan struct{}),
@@ -312,6 +313,10 @@ func TestTTLSweepExpiresSessions(t *testing.T) {
 	}
 	// Don't call Release — simulate the TTL sweeper doing it.
 	_ = sess // intentionally held open
+
+	// Release connection so activeConns becomes 0.
+	// This will reset lastAccessed to time.Now().
+	sess.ConnRelease()
 
 	// Backdate lastAccessed so the session looks stale (1 hour ago).
 	pool.mu.Lock()

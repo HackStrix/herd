@@ -91,6 +91,10 @@ func (s *Session[C]) Release() {
 	})
 }
 
+func (s *Session[C]) ConnRelease() {
+	s.pool.releaseConn(s.ID)
+}
+
 // ---------------------------------------------------------------------------
 // PoolStats
 // ---------------------------------------------------------------------------
@@ -127,6 +131,7 @@ type Pool[C any] struct {
 	sessions     map[string]Worker[C]     // sessionID → pinned worker
 	inflight     map[string]chan struct{} // sessionID → broadcast channel
 	lastAccessed map[string]time.Time     // sessionID → last Acquire time (for TTL)
+	activeConns  map[string]int32         // sessionID → active connections (for TTL)
 
 	workers   []Worker[C]    // all known workers (for Stats / Shutdown)
 	available chan Worker[C] // free workers
@@ -136,15 +141,15 @@ type Pool[C any] struct {
 
 	// pool context for canceling all the background loops
 	// must be canceled when the pool is shutting down
-	ctx    context.Context 
-    cancel context.CancelFunc
+	ctx    context.Context
+	cancel context.CancelFunc
 }
 
 // New creates a pool backed by factory, applies opts, and starts min workers.
 // Returns an error if any of the initial workers fail to start.
 func New[C any](factory WorkerFactory[C], opts ...Option) (*Pool[C], error) {
 	cfg := defaultConfig()
-	
+
 	// Using functional options pattern
 	for _, apply_options := range opts {
 		apply_options(&cfg)
@@ -158,6 +163,7 @@ func New[C any](factory WorkerFactory[C], opts ...Option) (*Pool[C], error) {
 		sessions:     make(map[string]Worker[C]),
 		inflight:     make(map[string]chan struct{}),
 		lastAccessed: make(map[string]time.Time),
+		activeConns:  make(map[string]int32), // initialize activeConns map
 		workers:      make([]Worker[C], 0, cfg.max),
 		available:    make(chan Worker[C], cfg.max),
 		done:         make(chan struct{}),
@@ -237,6 +243,7 @@ func (p *Pool[C]) Acquire(ctx context.Context, sessionID string) (*Session[C], e
 		// evict an actively-used session.
 		if w, ok := p.sessions[sessionID]; ok {
 			p.touchSession(sessionID)
+			p.activeConns[sessionID]++
 			p.mu.Unlock()
 			return &Session[C]{ID: sessionID, Worker: w, pool: p}, nil
 		}
@@ -306,6 +313,10 @@ func (p *Pool[C]) Acquire(ctx context.Context, sessionID string) (*Session[C], e
 		p.mu.Lock()
 		p.sessions[sessionID] = w
 		p.lastAccessed[sessionID] = time.Now()
+
+		// Increment active connections immediately
+		p.activeConns[sessionID]++
+
 		delete(p.inflight, sessionID)
 		p.mu.Unlock()
 
@@ -331,9 +342,9 @@ func (p *Pool[C]) release(sessionID string, w Worker[C]) {
 	for _, existing := range p.workers {
 		if existing.ID() == w.ID() {
 			isValid = true
-            break
-        }
-    }
+			break
+		}
+	}
 	p.mu.Unlock()
 
 	if !isValid {
@@ -350,6 +361,24 @@ func (p *Pool[C]) release(sessionID string, w Worker[C]) {
 	default:
 		log.Printf("[pool] release(%q): available channel full — this is a bug", sessionID)
 	}
+}
+
+func (p *Pool[C]) releaseConn(sessionID string) {
+	p.mu.Lock()
+	p.activeConns[sessionID]--
+	if p.activeConns[sessionID] < 0 {
+		p.activeConns[sessionID] = 0 // clamp to prevent underflow just in case
+	}
+
+	// Only clean up the actual session state if no active connections remain
+	if p.activeConns[sessionID] == 0 {
+		delete(p.activeConns, sessionID)
+		// Note: We deliberately do NOT remove the session from p.sessions or p.lastAccessed here.
+		// The entire point of session affinity is that the worker STAYS pinned backward to the
+		// sessionID until the TTL expires or the worker crashes.
+		p.touchSession(sessionID)
+	}
+	p.mu.Unlock()
 }
 
 // ---------------------------------------------------------------------------
@@ -417,11 +446,11 @@ func (p *Pool[C]) addWorker() {
 		p.pendingAdds--
 		p.mu.Unlock()
 	}()
-	
+
 	// if the factory spawn is over the network or some other external call it will hang and leak memory
 	// if it cant be resolved within 60 sec cancel the operation and reclaim resources
 	ctx, cancel := context.WithTimeout(p.ctx, 60*time.Second)
-	defer cancel()	
+	defer cancel()
 
 	w, err := p.factory.Spawn(ctx)
 	if err != nil {
@@ -483,7 +512,6 @@ func (p *Pool[C]) healthCheckLoop() {
 		}
 	}
 }
-
 
 // ---------------------------------------------------------------------------
 // Stats & Shutdown

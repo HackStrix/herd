@@ -116,6 +116,8 @@ func (rp *ReverseProxy[C]) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// no session release here
 	// We should not be releasing the session here. session should only be release at
 	// ttl or if the health checks fails and we are cleaning up
+	// this will be different
+	defer sess.ConnRelease()
 
 	target, err := url.Parse(sess.Worker.Address())
 	if err != nil {

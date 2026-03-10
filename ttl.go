@@ -65,6 +65,10 @@ func (p *Pool[C]) sweepExpired() {
 		if now.Sub(lastSeen) < p.cfg.ttl {
 			continue
 		}
+		// Skip TTL sweep if there are still active connections to this session
+		if p.activeConns[sid] > 0 {
+			continue
+		}
 		w, ok := p.sessions[sid]
 		if !ok {
 			// Session already released — clean up orphaned timestamp

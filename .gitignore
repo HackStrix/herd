@@ -7,3 +7,5 @@ examples/ollama/ollama
 
 # macOS
 .DS_Store
+
+venv
