@@ -61,7 +61,7 @@ func main() {
 	// 2. Worker reuse is disabled to prevent state leaks between sessions
 	pool, _ := herd.New(factory,
 		herd.WithAutoScale(1, 5),
-		herd.WithTTL(10 * time.Second),
+		herd.WithTTL(15 * time.Minute),
 		herd.WithWorkerReuse(false), // CRITICAL: Never share browsers between users
 	)
 
@@ -85,7 +85,7 @@ go run .
 
 ### 3. Usage
 
-Connect to the gateway using Python and Playwright. Herd guarantees that all requests with the same `X-Session-ID` connect to the exact same browser instance!
+Connect to the gateway using Python and Playwright. Herd guarantees that all requests with the same `X-Session-ID` connect to the exact same browser instance, preserving your state (like logins, cookies, and tabs) across reconnections as long as your session TTL hasn't expired!
 
 ```python
 import asyncio

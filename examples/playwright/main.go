@@ -30,7 +30,7 @@ func main() {
 	minWorkers := flag.Int("min", 1, "minimum playwright workers kept alive")
 	maxWorkers := flag.Int("max", 5, "maximum concurrent playwright workers")
 	port := flag.Int("port", 8080, "gateway listen port")
-	ttl := flag.Duration("ttl", 10*time.Second, "idle session TTL before the worker is reclaimed")
+	ttl := flag.Duration("ttl", 15*time.Minute, "idle session TTL before the worker is reclaimed")
 	flag.Parse()
 
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
@@ -44,7 +44,7 @@ func main() {
 		"npx", "playwright", "run-server",
 		"--port", "{{.Port}}",
 		"--host", "127.0.0.1",
-		).
+	).
 		WithHealthPath("/").
 		WithStartTimeout(1 * time.Minute).
 		WithStartHealthCheckDelay(500 * time.Millisecond)
