@@ -166,6 +166,7 @@ type ProcessFactory struct {
 	healthPath            string        // path to poll for liveness; defaults to "/health"
 	startTimeout          time.Duration // maximum time to wait for the first successful health check
 	startHealthCheckDelay time.Duration // delay the health check for the first time.
+	enableSandbox         bool          // true by default for isolation
 	counter               atomic.Int64
 }
 
@@ -183,6 +184,7 @@ func NewProcessFactory(binary string, args ...string) *ProcessFactory {
 		healthPath:            "/health",
 		startTimeout:          30 * time.Second,
 		startHealthCheckDelay: 1 * time.Second,
+		enableSandbox:         true,
 	}
 }
 
@@ -229,6 +231,14 @@ func (f *ProcessFactory) WithStartHealthCheckDelay(d time.Duration) *ProcessFact
 	return f
 }
 
+// WithInsecureSandbox disables the namespace/cgroup sandbox.
+// Use only for local debugging on non-Linux systems or when you explicitly
+// trust the spawned processes.
+func (f *ProcessFactory) WithInsecureSandbox() *ProcessFactory {
+	f.enableSandbox = false
+	return f
+}
+
 func streamLogs(workerID string, pipe io.ReadCloser, isError bool) {
 	// bufio.Scanner guarantees we read line-by-line, preventing torn logs.
 	scanner := bufio.NewScanner(pipe)
@@ -271,6 +281,14 @@ func (f *ProcessFactory) Spawn(ctx context.Context) (Worker[*http.Client], error
 	// During program exits, this should be cleaned up by the Shutdown method
 	cmd := exec.Command(f.binary, resolvedArgs...)
 	cmd.Env = append(os.Environ(), append([]string{"PORT=" + portStr}, resolvedEnv...)...)
+
+	if f.enableSandbox {
+		if err := applySandboxFlags(cmd); err != nil {
+			return nil, fmt.Errorf("herd: ProcessFactory: failed to apply sandbox: %w", err)
+		}
+	} else {
+		log.Printf("[%s] WARNING: running UN-SANDBOXED. Not recommended for production.", id)
+	}
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
