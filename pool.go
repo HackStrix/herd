@@ -136,7 +136,6 @@ type Pool[C any] struct {
 	workers   []Worker[C]    // all known workers (for Stats / Shutdown)
 	available chan Worker[C] // free workers
 
-	wg   sync.WaitGroup
 	done chan struct{} // closed when the pool is shutting down, all the background loops will listen for this
 
 	// pool context for canceling all the background loops
