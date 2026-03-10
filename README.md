@@ -31,6 +31,85 @@ go get github.com/hackstrix/herd
 
 ---
 
+## 🌐 Quick Start: Playwright Browser Isolation
+
+Herd is perfect for creating multi-tenant browser automation gateways. In this example, each session ID gets its own dedicated Chrome instance. Because browsers maintain complex state (cookies, local storage, open pages), we configure Herd to never reuse a worker once its TTL expires, avoiding cross-tenant state leaks.
+
+You can find the full, runnable code for this example in [`examples/playwright/main.go`](examples/playwright/main.go).
+
+### 1. The Code
+
+```go
+package main
+
+import (
+	"log"
+	"net/http"
+	"time"
+
+	"github.com/hackstrix/herd"
+	"github.com/hackstrix/herd/proxy"
+)
+
+func main() {
+	// 1. Spawns an isolated npx playwright run-server per user
+	factory := herd.NewProcessFactory("npx", "playwright", "run-server", "--port", "{{.Port}}", "--host", "127.0.0.1").
+		WithHealthPath("/").
+		WithStartTimeout(1 * time.Minute).
+		WithStartHealthCheckDelay(500 * time.Millisecond)
+
+	// 2. Worker reuse is disabled to prevent state leaks between sessions
+	pool, _ := herd.New(factory,
+		herd.WithAutoScale(1, 5),
+		herd.WithTTL(10 * time.Second),
+		herd.WithWorkerReuse(false), // CRITICAL: Never share browsers between users
+	)
+
+	// 3. Setup proxy to intelligently route WebSocket connections
+	mux := http.NewServeMux()
+	mux.Handle("/", proxy.NewReverseProxy(pool, func(r *http.Request) string {
+		return r.Header.Get("X-Session-ID") // Pin by X-Session-ID
+	}))
+
+	log.Fatal(http.ListenAndServe(":8080", mux))
+}
+```
+
+### 2. Running It
+
+Start the gateway (assuming you are in the `examples/playwright` directory):
+
+```bash
+go run .
+```
+
+### 3. Usage
+
+Connect to the gateway using Python and Playwright. Herd guarantees that all requests with the same `X-Session-ID` connect to the exact same browser instance!
+
+```python
+import asyncio
+from playwright.async_api import async_playwright
+
+async def main():
+    async with async_playwright() as p:
+        # Herd routes based on X-Session-ID header
+        browser = await p.chromium.connect(
+            "ws://127.0.0.1:8080/", 
+            headers={"X-Session-ID": "my-secure-session"}
+        )
+        
+        ctx = await browser.new_context()
+        page = await ctx.new_page()
+        await page.goto("https://github.com")
+        print(await page.title())
+        await browser.close()
+
+asyncio.run(main())
+```
+
+---
+
 ## 🛠️ Quick Start: Ollama Multi-Agent Gateway
 
 Here is an example of turning `ollama serve` into a multi-tenant LLM gateway where each agent (or user) gets their own dedicated Ollama process. This is specifically useful for isolating context windows or KV caches per agent without downloading models multiple times.
