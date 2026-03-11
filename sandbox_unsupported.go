@@ -27,3 +27,7 @@ var ErrSandboxUnsupported = errors.New(
 func applySandboxFlags(cmd *exec.Cmd, workerID string, cfg sandboxConfig) (sandboxHandle, error) {
 	return nil, ErrSandboxUnsupported
 }
+
+func defaultNamespaceCloneFlags() uintptr {
+	return 0
+}

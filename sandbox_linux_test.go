@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -160,6 +161,32 @@ func TestApplySandboxFlags_SysProcAttrWired(t *testing.T) {
 	}
 	if cmd.SysProcAttr.CgroupFD <= 0 {
 		t.Errorf("CgroupFD should be a valid fd (>0), got %d", cmd.SysProcAttr.CgroupFD)
+	}
+}
+
+func TestApplySandboxFlags_CloneFlagsMergedWithCgroup(t *testing.T) {
+	withTempCgroupRoot(t)
+	cmd := newFakeCmd()
+
+	flags := uintptr(syscall.CLONE_NEWPID | syscall.CLONE_NEWNS | syscall.CLONE_NEWIPC)
+	h, err := applySandboxFlags(cmd, "worker-ns", sandboxConfig{cloneFlags: flags})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if h == nil {
+		t.Fatal("expected non-nil handle")
+	}
+	if cmd.SysProcAttr == nil {
+		t.Fatal("SysProcAttr should be set after applySandboxFlags")
+	}
+	if cmd.SysProcAttr.CloneFlags&flags != flags {
+		t.Errorf("expected CloneFlags to include %#x, got %#x", flags, cmd.SysProcAttr.CloneFlags)
+	}
+	if !cmd.SysProcAttr.UseCgroupFD {
+		t.Error("UseCgroupFD should remain true after namespace merge")
+	}
+	if cmd.SysProcAttr.CgroupFD <= 0 {
+		t.Errorf("CgroupFD should remain set after namespace merge, got %d", cmd.SysProcAttr.CgroupFD)
 	}
 }
 

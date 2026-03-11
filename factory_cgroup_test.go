@@ -25,6 +25,13 @@ func TestNewProcessFactory_DefaultMemoryCPUUnlimited(t *testing.T) {
 	}
 }
 
+func TestNewProcessFactory_DefaultNamespaceFlags(t *testing.T) {
+	f := NewProcessFactory("./fake-binary")
+	if f.namespaceCloneFlags != defaultNamespaceCloneFlags() {
+		t.Errorf("expected default namespaceCloneFlags=%d, got %d", defaultNamespaceCloneFlags(), f.namespaceCloneFlags)
+	}
+}
+
 func TestWithMemoryLimit_StoresBytes(t *testing.T) {
 	const limit = 512 * 1024 * 1024 // 512 MB
 	f := NewProcessFactory("./fake-binary").WithMemoryLimit(limit)
