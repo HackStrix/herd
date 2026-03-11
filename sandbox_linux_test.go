@@ -179,8 +179,8 @@ func TestApplySandboxFlags_CloneFlagsMergedWithCgroup(t *testing.T) {
 	if cmd.SysProcAttr == nil {
 		t.Fatal("SysProcAttr should be set after applySandboxFlags")
 	}
-	if cmd.SysProcAttr.CloneFlags&flags != flags {
-		t.Errorf("expected CloneFlags to include %#x, got %#x", flags, cmd.SysProcAttr.CloneFlags)
+	if cmd.SysProcAttr.Cloneflags&flags != flags {
+		t.Errorf("expected Cloneflags to include %#x, got %#x", flags, cmd.SysProcAttr.Cloneflags)
 	}
 	if !cmd.SysProcAttr.UseCgroupFD {
 		t.Error("UseCgroupFD should remain true after namespace merge")

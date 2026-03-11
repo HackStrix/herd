@@ -113,7 +113,7 @@ func applySandboxFlags(cmd *exec.Cmd, workerID string, cfg sandboxConfig) (sandb
 		sys = &syscall.SysProcAttr{}
 	}
 	if cfg.cloneFlags != 0 {
-		sys.CloneFlags |= cfg.cloneFlags
+		sys.Cloneflags |= cfg.cloneFlags
 	}
 	sys.CgroupFD = int(dir.Fd())
 	sys.UseCgroupFD = true
