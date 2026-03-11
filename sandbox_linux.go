@@ -112,11 +112,18 @@ func applySandboxFlags(cmd *exec.Cmd, workerID string, cfg sandboxConfig) (sandb
 	if sys == nil {
 		sys = &syscall.SysProcAttr{}
 	}
+	if cfg.cloneFlags != 0 {
+		sys.Cloneflags |= cfg.cloneFlags
+	}
 	sys.CgroupFD = int(dir.Fd())
 	sys.UseCgroupFD = true
 	cmd.SysProcAttr = sys
 
 	return &cgroupHandle{path: cgroupPath, fd: dir}, nil
+}
+
+func defaultNamespaceCloneFlags() uintptr {
+	return uintptr(syscall.CLONE_NEWPID | syscall.CLONE_NEWNS | syscall.CLONE_NEWIPC)
 }
 
 func writeCgroupFile(cgroupPath, filename, value string) error {

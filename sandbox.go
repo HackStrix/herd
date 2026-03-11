@@ -6,6 +6,7 @@ type sandboxConfig struct {
 	memoryMaxBytes int64
 	cpuMaxMicros   int64
 	pidsMax        int64
+	cloneFlags     uintptr
 }
 
 // sandboxHandle owns post-start and cleanup hooks for sandbox resources.

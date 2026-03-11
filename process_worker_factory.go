@@ -172,6 +172,7 @@ type ProcessFactory struct {
 	startTimeout          time.Duration // maximum time to wait for the first successful health check
 	startHealthCheckDelay time.Duration // delay the health check for the first time.
 	enableSandbox         bool          // true by default for isolation
+	namespaceCloneFlags   uintptr       // Linux namespaces to enable for sandboxed workers
 	cgroupMemory          int64         // bytes; 0 means unlimited
 	cgroupCPU             int64         // quota in micros per 100ms period; 0 means unlimited
 	cgroupPIDs            int64         // max pids; -1 means unlimited
@@ -193,6 +194,7 @@ func NewProcessFactory(binary string, args ...string) *ProcessFactory {
 		startTimeout:          30 * time.Second,
 		startHealthCheckDelay: 1 * time.Second,
 		enableSandbox:         true,
+		namespaceCloneFlags:   defaultNamespaceCloneFlags(),
 		cgroupPIDs:            100,
 	}
 }
@@ -331,6 +333,7 @@ func (f *ProcessFactory) Spawn(ctx context.Context) (Worker[*http.Client], error
 			memoryMaxBytes: f.cgroupMemory,
 			cpuMaxMicros:   f.cgroupCPU,
 			pidsMax:        f.cgroupPIDs,
+			cloneFlags:     f.namespaceCloneFlags,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("herd: ProcessFactory: failed to apply sandbox: %w", err)

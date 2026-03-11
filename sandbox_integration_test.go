@@ -19,6 +19,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -239,4 +240,66 @@ func TestSandbox_MemoryLimitFileWritten(t *testing.T) {
 	}
 	t.Logf("memory limits confirmed: max=%s swap=%s",
 		strings.TrimSpace(string(memMax)), strings.TrimSpace(string(swapMax)))
+}
+
+func TestNamespace_PIDIsolation(t *testing.T) {
+	requireCgroupIntegration(t)
+
+	bin := buildHealthWorker(t)
+
+	factory := NewProcessFactory(bin).
+		WithHealthPath("/health").
+		WithStartTimeout(10 * time.Second).
+		WithStartHealthCheckDelay(100 * time.Millisecond)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	worker, err := factory.Spawn(ctx)
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	defer worker.Close()
+
+	pw, ok := worker.(*processWorker)
+	if !ok {
+		t.Fatal("expected *processWorker from Spawn")
+	}
+	pw.mu.Lock()
+	hostPID := pw.cmd.Process.Pid
+	pw.mu.Unlock()
+
+	statusFile := fmt.Sprintf("/proc/%d/status", hostPID)
+	status, err := os.ReadFile(statusFile)
+	if err != nil {
+		t.Fatalf("read %s: %v", statusFile, err)
+	}
+
+	insidePID, ok := parseInnermostNSpid(string(status))
+	if !ok {
+		t.Fatalf("NSpid line not found in %s:\n%s", statusFile, string(status))
+	}
+	if insidePID != 1 {
+		t.Fatalf("expected worker to be PID 1 inside its namespace, got %d", insidePID)
+	}
+	t.Logf("NSpid verified: host pid=%d, namespace pid=%d", hostPID, insidePID)
+}
+
+func parseInnermostNSpid(status string) (int, bool) {
+	for _, line := range strings.Split(status, "\n") {
+		if !strings.HasPrefix(line, "NSpid:") {
+			continue
+		}
+		fields := strings.Fields(strings.TrimPrefix(line, "NSpid:"))
+		if len(fields) == 0 {
+			return 0, false
+		}
+		last := fields[len(fields)-1]
+		pid, err := strconv.Atoi(last)
+		if err != nil {
+			return 0, false
+		}
+		return pid, true
+	}
+	return 0, false
 }

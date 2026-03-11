@@ -62,12 +62,12 @@ jobs:
     - name: Build test dependencies (healthworker)
       run: go build ./testdata/healthworker/...
 
-    - name: Run cgroup integration tests (as root)
+    - name: Run cgroup + namespace integration tests (as root)
       if: env.CGROUP_AVAILABLE == 'true'
       run: |
         sudo --preserve-env=PATH,GOPATH,GOCACHE,HOME \
           env HERD_CGROUP_TEST=1 \
-          $(which go) test -v -run TestSandbox -timeout 60s ./...
+          $(which go) test -v -run 'TestSandbox|TestNamespace' -timeout 90s ./...
       env:
         GOPATH: ${{ env.GOPATH }}
         GOCACHE: ${{ env.GOCACHE }}
