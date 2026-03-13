@@ -100,19 +100,25 @@ func newTestPool(t *testing.T, workers ...*stubWorker) *Pool[*stubClient] {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel) // ensure no goroutine leaks after the test exits
 
+	cfg := defaultConfig()
+	cfg.max = len(workers) // Ensure cfg.max is at least the number of workers provided
+	if cfg.max == 0 {
+		cfg.max = 1 // Default to 1 if no workers provided
+	}
+
 	p := &Pool[*stubClient]{
 		factory:      factory,
-		cfg:          defaultConfig(),
-		sessions:     make(map[string]Worker[*stubClient]),
+		cfg:          cfg,
+		registry:     newLocalRegistry[*stubClient](),
 		inflight:     make(map[string]chan struct{}),
 		lastAccessed: make(map[string]time.Time),
-		activeConns:  make(map[string]int32),
-		workers:      make([]Worker[*stubClient], 0, len(workers)),
-		available:    make(chan Worker[*stubClient], len(workers)),
+		activeConns:  make(map[string]int32), // initialize activeConns map
+		workers:      make([]Worker[*stubClient], 0, cfg.max),
+		available:    make(chan Worker[*stubClient], cfg.max),
 		done:         make(chan struct{}),
-		ctx:          ctx,
-		cancel:       cancel,
 	}
+	p.ctx = ctx
+	p.cancel = cancel
 
 	// Manually wire workers (same logic as New → wireWorker, minus crash hookup)
 	for _, w := range workers {
@@ -175,6 +181,10 @@ func TestSameSessionSingleflight(t *testing.T) {
 	if stats.AvailableWorkers != 1 {
 		t.Errorf("expected 1 available worker (w2 untouched), got %d", stats.AvailableWorkers)
 	}
+	// Verify one session is pinned
+	if n := pool.registry.Len(); n != 1 {
+		t.Errorf("expected 1 session pinned, got %d", n)
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -228,8 +238,9 @@ func TestDifferentSessionsIsolated(t *testing.T) {
 	if stats.AvailableWorkers != 0 {
 		t.Errorf("expected 0 available workers (all pinned), got %d", stats.AvailableWorkers)
 	}
-	if stats.ActiveSessions != 3 {
-		t.Errorf("expected 3 active sessions, got %d", stats.ActiveSessions)
+	// Verify 3 sessions are pinned
+	if n := pool.registry.Len(); n != 3 {
+		t.Errorf("expected 3 sessions pinned, got %d", n)
 	}
 }
 
@@ -258,10 +269,8 @@ func TestCrashDuringAcquire(t *testing.T) {
 	}
 
 	// The session must not exist in the map
-	pool.mu.Lock()
-	_, exists := pool.sessions["session-y"]
-	pool.mu.Unlock()
-	if exists {
+	w_dead, _ := pool.registry.Get(context.Background(), "session-y")
+	if w_dead != nil {
 		t.Error("session-y should not exist in session map after failed Acquire")
 	}
 }
@@ -286,6 +295,14 @@ func TestReleaseReturnsWorkerToPool(t *testing.T) {
 	if got := pool.Stats().AvailableWorkers; got != 0 {
 		t.Fatalf("expected 0 available after Acquire, got %d", got)
 	}
+	// Verify session is pinned
+	if n := pool.registry.Len(); n != 1 {
+		t.Fatalf("expected 1 session pinned, got %d", n)
+	}
+	sessions, _ := pool.registry.List(context.Background())
+	if worker, ok := sessions["session-z"]; !ok || worker != w {
+		t.Fatalf("session-z should be pinned to worker w1")
+	}
 
 	sess.Release()
 
@@ -295,10 +312,8 @@ func TestReleaseReturnsWorkerToPool(t *testing.T) {
 	}
 
 	// And the session should be gone from the map
-	pool.mu.Lock()
-	_, exists := pool.sessions["session-z"]
-	pool.mu.Unlock()
-	if exists {
+	w_gone, _ := pool.registry.Get(context.Background(), "session-z")
+	if w_gone != nil {
 		t.Error("session-z should not exist in session map after Release")
 	}
 }
@@ -334,11 +349,9 @@ func TestTTLSweepExpiresSessions(t *testing.T) {
 	pool.sweepExpired()
 
 	// Session should be gone from the affinity map.
-	pool.mu.Lock()
-	_, stillExists := pool.sessions["session-ttl"]
-	pool.mu.Unlock()
-	if stillExists {
-		t.Error("expected session-ttl to be evicted by TTL sweeper")
+	w_evicted, _ := pool.registry.Get(context.Background(), "session-ttl")
+	if w_evicted != nil {
+		t.Error("session-ttl should have been evicted by TTL sweeper")
 	}
 
 	// Worker should be back in the available channel.

@@ -27,6 +27,7 @@
 package herd
 
 import (
+	"context"
 	"log"
 	"time"
 )
@@ -61,6 +62,7 @@ func (p *Pool[C]) sweepExpired() {
 		sessionID string
 		worker    Worker[C]
 	}
+	sessions, _ := p.registry.List(context.Background())
 	for sid, lastSeen := range p.lastAccessed {
 		if now.Sub(lastSeen) < p.cfg.ttl {
 			continue
@@ -69,7 +71,7 @@ func (p *Pool[C]) sweepExpired() {
 		if p.activeConns[sid] > 0 {
 			continue
 		}
-		w, ok := p.sessions[sid]
+		w, ok := sessions[sid]
 		if !ok {
 			// Session already released — clean up orphaned timestamp
 			delete(p.lastAccessed, sid)
@@ -79,7 +81,7 @@ func (p *Pool[C]) sweepExpired() {
 			sessionID string
 			worker    Worker[C]
 		}{sid, w})
-		delete(p.sessions, sid)
+		_ = p.registry.Delete(context.Background(), sid)
 		delete(p.lastAccessed, sid)
 	}
 	p.mu.Unlock()

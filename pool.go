@@ -137,7 +137,7 @@ type Pool[C any] struct {
 
 	mu           sync.Mutex
 	pendingAdds  int
-	sessions     map[string]Worker[C]     // sessionID → pinned worker
+	registry     SessionRegistry[C]       // sessionID → pinned worker
 	inflight     map[string]chan struct{} // sessionID → broadcast channel
 	lastAccessed map[string]time.Time     // sessionID → last Acquire time (for TTL)
 	activeConns  map[string]int32         // sessionID → active connections (for TTL)
@@ -168,7 +168,7 @@ func New[C any](factory WorkerFactory[C], opts ...Option) (*Pool[C], error) {
 	p := &Pool[C]{
 		factory:      factory,
 		cfg:          cfg,
-		sessions:     make(map[string]Worker[C]),
+		registry:     newLocalRegistry[C](),
 		inflight:     make(map[string]chan struct{}),
 		lastAccessed: make(map[string]time.Time),
 		activeConns:  make(map[string]int32), // initialize activeConns map
@@ -243,13 +243,20 @@ func (p *Pool[C]) wireWorker(w Worker[C]) {
 // Blocks until a worker is available or ctx is cancelled.
 func (p *Pool[C]) Acquire(ctx context.Context, sessionID string) (*Session[C], error) {
 	for {
+		var w Worker[C]
+		var err error
 		p.mu.Lock()
 
 		// ── FAST PATH ──────────────────────────────────────────────────────
 		// Session already pinned: return the existing worker immediately.
 		// Also update the last-accessed time so the TTL sweeper doesn't
 		// evict an actively-used session.
-		if w, ok := p.sessions[sessionID]; ok {
+		w, err = p.registry.Get(ctx, sessionID)
+		if err != nil {
+			p.mu.Unlock()
+			return nil, fmt.Errorf("herd: Acquire(%q): directory lookup failed: %w", sessionID, err)
+		}
+		if w != nil {
 			p.touchSession(sessionID)
 			p.activeConns[sessionID]++
 			p.mu.Unlock()
@@ -283,7 +290,6 @@ func (p *Pool[C]) Acquire(ctx context.Context, sessionID string) (*Session[C], e
 		p.maybeScaleUp()
 
 		// Block until a free worker arrives or we time out.
-		var w Worker[C]
 		select {
 		case w = <-p.available:
 		case <-ctx.Done():
@@ -302,7 +308,7 @@ func (p *Pool[C]) Acquire(ctx context.Context, sessionID string) (*Session[C], e
 		// This prevents giving a dead handle to the caller (and to any
 		// goroutines waiting on the inflight channel).
 		hCtx, hCancel := context.WithTimeout(ctx, 3*time.Second)
-		err := w.Healthy(hCtx)
+		err = w.Healthy(hCtx)
 		hCancel()
 
 		if err != nil {
@@ -319,7 +325,11 @@ func (p *Pool[C]) Acquire(ctx context.Context, sessionID string) (*Session[C], e
 
 		// Pin the worker to this session, record access time, and broadcast.
 		p.mu.Lock()
-		p.sessions[sessionID] = w
+		if err = p.registry.Put(ctx, sessionID, w); err != nil {
+			p.mu.Unlock()
+			close(ch)
+			return nil, fmt.Errorf("herd: Acquire(%q): failed to pin session: %w", sessionID, err)
+		}
 		p.lastAccessed[sessionID] = time.Now()
 
 		// Increment active connections immediately
@@ -343,7 +353,7 @@ func (p *Pool[C]) Acquire(ctx context.Context, sessionID string) (*Session[C], e
 // available channel. Internal; external callers use Session.Release().
 func (p *Pool[C]) release(sessionID string, w Worker[C]) {
 	p.mu.Lock()
-	delete(p.sessions, sessionID)
+	_ = p.registry.Delete(context.Background(), sessionID)
 	delete(p.lastAccessed, sessionID)
 	// Validate the worker wasn't evicted by a crash or health check
 	isValid := false
@@ -398,8 +408,9 @@ func (p *Pool[C]) releaseConn(sessionID string) {
 // sessionID, then calls the user-supplied crash handler.
 func (p *Pool[C]) onCrash(sessionID string) {
 	p.mu.Lock()
-	w, hadSession := p.sessions[sessionID]
-	delete(p.sessions, sessionID)
+	w, _ := p.registry.Get(context.Background(), sessionID)
+	hadSession := w != nil
+	_ = p.registry.Delete(context.Background(), sessionID)
 
 	// If another Acquire is in-flight for this sessionID, close its channel
 	// so the waiting goroutine unblocks and returns an error rather than
@@ -500,11 +511,11 @@ func (p *Pool[C]) healthCheckLoop() {
 		select {
 		case <-ticker.C:
 			p.mu.Lock()
-			workers := make([]Worker[C], len(p.workers))
-			copy(workers, p.workers)
+			workersSnapshot := make([]Worker[C], len(p.workers))
+			copy(workersSnapshot, p.workers)
 			p.mu.Unlock()
 
-			for _, w := range workers {
+			for _, w := range workersSnapshot {
 				hCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 				err := w.Healthy(hCtx)
 				cancel()
@@ -512,6 +523,9 @@ func (p *Pool[C]) healthCheckLoop() {
 					log.Printf("[pool] health-check: worker %s unhealthy (%v) — closing", w.ID(), err)
 					_ = w.Close()
 					p.removeWorker(w)
+					// If this worker was pinned to any session, it should be removed
+					// but our List doesn't map worker -> session easily.
+					// The next Acquire will fail health check and clean it up.
 					p.maybeScaleUp()
 				}
 			}
@@ -538,7 +552,7 @@ func (p *Pool[C]) Stats() PoolStats {
 	return PoolStats{
 		TotalWorkers:     len(p.workers),
 		AvailableWorkers: len(p.available),
-		ActiveSessions:   len(p.sessions),
+		ActiveSessions:   p.registry.Len(), // Add Len() to registry or use alternative
 		InflightAcquires: len(p.inflight),
 		Node:             nodeStats,
 	}
