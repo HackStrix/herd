@@ -55,6 +55,8 @@ import (
 	"log"
 	"sync"
 	"time"
+
+	"github.com/hackstrix/herd/observer"
 )
 
 // ---------------------------------------------------------------------------
@@ -114,6 +116,13 @@ type PoolStats struct {
 	// InflightAcquires is the number of Acquire calls currently in the "slow path"
 	// (waiting for a worker to become available). Useful for queue-depth alerting.
 	InflightAcquires int
+
+	// Node is a snapshot of host-level resource availability (memory, CPU idle).
+	// Populated by observer.PollNodeStats(); zero-valued on non-Linux platforms
+	// or if the poll fails.
+	//
+	// Note: on Linux, Stats() blocks for ~100 ms to measure CPU idle.
+	Node observer.NodeStats
 }
 
 // ---------------------------------------------------------------------------
@@ -347,7 +356,7 @@ func (p *Pool[C]) release(sessionID string, w Worker[C]) {
 	p.mu.Unlock()
 
 	if !isValid {
-		log.Printf("[pool] release(%q): worker %s returned to pool", sessionID, w.ID())
+		log.Printf("[pool] release(%q): worker %s already evicted (crash or health-check), discarding", sessionID, w.ID())
 		return
 	}
 
@@ -518,7 +527,12 @@ func (p *Pool[C]) healthCheckLoop() {
 
 // Stats returns a point-in-time snapshot of pool state.
 // Safe to call concurrently.
+//
+// On Linux this blocks for ~100 ms to measure CPU idle via /proc/stat.
+// Cache the result if you call Stats() in a hot path.
 func (p *Pool[C]) Stats() PoolStats {
+	nodeStats, _ := observer.PollNodeStats()
+
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return PoolStats{
@@ -526,6 +540,7 @@ func (p *Pool[C]) Stats() PoolStats {
 		AvailableWorkers: len(p.available),
 		ActiveSessions:   len(p.sessions),
 		InflightAcquires: len(p.inflight),
+		Node:             nodeStats,
 	}
 }
 
@@ -533,9 +548,16 @@ func (p *Pool[C]) Stats() PoolStats {
 // It closes all background goroutines and then kills every worker.
 // In-flight Acquire calls will receive a context cancellation error if
 // the caller's ctx is tied to the application lifetime.
+//
+// Two signals are sent deliberately:
+//   - p.cancel() cancels p.ctx, which unblocks any in-flight addWorker
+//     goroutines that are blocking on factory.Spawn (they use a
+//     context.WithTimeout derived from p.ctx).
+//   - close(p.done) signals the healthCheckLoop and runTTLSweep goroutines
+//     to exit their ticker loops cleanly.
 func (p *Pool[C]) Shutdown(ctx context.Context) error {
-	p.cancel()
-	close(p.done)
+	p.cancel()    // kill in-flight factory.Spawn calls
+	close(p.done) // stop background health-check and TTL loops
 	p.mu.Lock()
 	workers := make([]Worker[C], len(p.workers))
 	copy(workers, p.workers)

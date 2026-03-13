@@ -213,6 +213,36 @@ Herd is built around three core interfaces:
 
 ---
 
+## 📊 Monitoring
+
+`Pool.Stats()` returns a point-in-time snapshot of both **pool state** and **host resource usage**, powered by the `herd/observer` subpackage.
+
+```go
+import (
+    "fmt"
+    "github.com/hackstrix/herd"
+)
+
+stats := pool.Stats()
+
+fmt.Printf("Workers : %d total, %d available\n",
+    stats.TotalWorkers, stats.AvailableWorkers)
+fmt.Printf("Sessions: %d active, %d acquiring\n",
+    stats.ActiveSessions, stats.InflightAcquires)
+
+// Node-level resource snapshot (Linux only; zero on macOS/Windows)
+fmt.Printf("Host RAM: %d MB total, %d MB available\n",
+    stats.Node.TotalMemoryBytes/1024/1024,
+    stats.Node.AvailableMemoryBytes/1024/1024)
+fmt.Printf("CPU Idle: %.1f%%\n", stats.Node.CPUIdle*100)
+```
+
+> **Note:** On Linux, `Stats()` blocks for ~100 ms to measure CPU idle via two `/proc/stat` samples. Cache the result if you expose it on a high-traffic metrics endpoint.
+
+The `Node` field is zero-valued on non-Linux platforms — treat a zero `TotalMemoryBytes` as "metrics unavailable" rather than "machine has no RAM."
+
+---
+
 ## 📄 License
 
 MIT License. See `LICENSE` for details.

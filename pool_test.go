@@ -94,7 +94,12 @@ func newTestPool(t *testing.T, workers ...*stubWorker) *Pool[*stubClient] {
 	t.Helper()
 	factory := newStubFactory(workers...)
 
-	// Build pool with min=0 so New() doesn't call Spawn at startup
+	// Build pool with min=0 so New() doesn't call Spawn at startup.
+	// ctx/cancel must be wired so that addWorker (called by maybeScaleUp)
+	// can derive its spawn timeout via context.WithTimeout(p.ctx, ...).
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel) // ensure no goroutine leaks after the test exits
+
 	p := &Pool[*stubClient]{
 		factory:      factory,
 		cfg:          defaultConfig(),
@@ -105,6 +110,8 @@ func newTestPool(t *testing.T, workers ...*stubWorker) *Pool[*stubClient] {
 		workers:      make([]Worker[*stubClient], 0, len(workers)),
 		available:    make(chan Worker[*stubClient], len(workers)),
 		done:         make(chan struct{}),
+		ctx:          ctx,
+		cancel:       cancel,
 	}
 
 	// Manually wire workers (same logic as New → wireWorker, minus crash hookup)
