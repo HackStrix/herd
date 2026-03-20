@@ -1,0 +1,68 @@
+site_name: Herd
+site_description: High-performance, cross-language process pooling and orchestration.
+site_author: HackStrix
+site_url: https://herd-core.github.io/herd/
+
+repo_name: herd-core/herd
+repo_url: https://github.com/herd-core/herd
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.top
+    - navigation.instant
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+  palette:
+    # Palette toggle for light mode
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    # Palette toggle for dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.tabbed:
+      alternate_style: true
+
+nav:
+  - Introduction:
+    - What is Herd?: index.md
+    - Quickstart: intro/quickstart.md
+  - Architecture:
+    - Dual-Mode Design: architecture/dual-mode.md
+    - Singleflight & Locks: architecture/singleflight.md
+    - Connection Tracking: architecture/tracking.md
+  - Native Go Library:
+    - Installation: go/install.md
+    - The Pool Engine: go/pool.md
+    - Worker Interfaces: go/workers.md
+  - gRPC Daemon:
+    - Installation: daemon/install.md
+    - CLI Reference: daemon/cli.md
+    - Unix Domain Sockets: daemon/uds.md
+  - Language SDKs:
+    - Python: sdks/python.md
+    - Elixir: sdks/elixir.md
+  - Deployment:
+    - Kubernetes Sidecar: deployment/kubernetes.md
+    - Host OS Execution: deployment/bare-metal.md
