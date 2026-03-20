@@ -48,6 +48,7 @@ type stubClient struct{}
 func (w *stubWorker) ID() string          { return w.id }
 func (w *stubWorker) Address() string     { return "http://127.0.0.1:9999" }
 func (w *stubWorker) Client() *stubClient { return &stubClient{} }
+func (w *stubWorker) OnCrash(fn func(string)) {}
 func (w *stubWorker) Healthy(_ context.Context) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -109,7 +110,7 @@ func newTestPool(t *testing.T, workers ...*stubWorker) *Pool[*stubClient] {
 	p := &Pool[*stubClient]{
 		factory:      factory,
 		cfg:          cfg,
-		registry:     newLocalRegistry[*stubClient](),
+		registry:     NewLocalRegistry[*stubClient](),
 		inflight:     make(map[string]chan struct{}),
 		lastAccessed: make(map[string]time.Time),
 		activeConns:  make(map[string]int32), // initialize activeConns map

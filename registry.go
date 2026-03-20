@@ -35,7 +35,7 @@ type localRegistry[C any] struct {
 	sessions map[string]Worker[C]
 }
 
-func newLocalRegistry[C any]() *localRegistry[C] {
+func NewLocalRegistry[C any]() *localRegistry[C] {
 	return &localRegistry[C]{
 		sessions: make(map[string]Worker[C]),
 	}

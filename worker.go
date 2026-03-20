@@ -47,6 +47,9 @@ type Worker[C any] interface {
 	// so a stale or crashed worker is never returned to a caller.
 	Healthy(ctx context.Context) error
 
+	// OnCrash sets a callback triggered when the worker process exits unexpectedly.
+	OnCrash(func(sessionID string))
+
 	// Close performs graceful shutdown of the worker process.
 	// Called by the pool during scale-down or Pool.Shutdown.
 	io.Closer

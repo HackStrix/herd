@@ -168,7 +168,7 @@ func New[C any](factory WorkerFactory[C], opts ...Option) (*Pool[C], error) {
 	p := &Pool[C]{
 		factory:      factory,
 		cfg:          cfg,
-		registry:     newLocalRegistry[C](),
+		registry:     NewLocalRegistry[C](),
 		inflight:     make(map[string]chan struct{}),
 		lastAccessed: make(map[string]time.Time),
 		activeConns:  make(map[string]int32), // initialize activeConns map
@@ -212,11 +212,9 @@ func New[C any](factory WorkerFactory[C], opts ...Option) (*Pool[C], error) {
 func (p *Pool[C]) wireWorker(w Worker[C]) {
 	// Wire crash callback if the underlying worker supports it
 	// (i.e. it is a *processWorker from ProcessFactory).
-	if pw, ok := any(w).(*processWorker); ok {
-		pw.onCrash = func(sessionID string) {
-			p.onCrash(sessionID)
-		}
-	}
+	w.OnCrash(func(sessionID string) {
+		p.onCrash(sessionID)
+	})
 	p.mu.Lock()
 	p.workers = append(p.workers, w)
 	p.mu.Unlock()
