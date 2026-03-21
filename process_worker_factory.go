@@ -334,6 +334,10 @@ func (f *ProcessFactory) Spawn(ctx context.Context) (Worker[*http.Client], error
 	// During program exits, this should be cleaned up by the Shutdown method
 	cmd := exec.Command(f.binary, resolvedArgs...)
 	cmd.Env = append(os.Environ(), append([]string{"PORT=" + portStr}, resolvedEnv...)...)
+
+	// Apply OS-specific attributes (e.g. Pdeathsig on Linux) to prevent zombies
+	core.ApplyOSAttributes(cmd)
+
 	var cgroupHandle core.SandboxHandle
 
 	if f.enableSandbox {
