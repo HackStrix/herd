@@ -54,7 +54,10 @@ func runDaemon() {
 		log.Println("Shutting down pool...")
 		// Will assume Shutdown(context.Background()) exists, we'll verify this during compilation check.
 		// If Pool does not have Shutdown, we'll update this. 
-		pool.Shutdown(context.Background())
+		err := pool.Shutdown(context.Background())
+		if err != nil {
+			log.Println("Error shutting down pool:", err)
+		}
 		log.Println("Daemon gracefully stopped.")
 	}()
 
