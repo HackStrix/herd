@@ -1,7 +1,13 @@
 package main
 
-import "fmt"
+import (
+	"log"
+	"os"
+)
 
 func main() {
-	fmt.Println("Herd Daemon Skeleton")
+	if err := Execute(); err != nil {
+		log.Println(err)
+		os.Exit(1)
+	}
 }
