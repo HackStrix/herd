@@ -578,6 +578,7 @@ func (p *Pool[C]) Shutdown(ctx context.Context) error {
 	for _, w := range workers {
 		if err := w.Close(); err != nil {
 			log.Printf("[pool] Shutdown: error closing worker %s: %v", w.ID(), err)
+			return err
 		}
 	}
 	log.Println("[pool] shutdown complete")
